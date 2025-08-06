@@ -342,71 +342,178 @@ def show_all_apps_overview(df):
     st.header("All-App Comparative Overview")
     st.markdown("A high-level comparison of all e-commerce apps in the dataset.")
 
-    st.subheader("Overall Dataset Metrics")
-    total_reviews = len(df)
-    num_apps = df['app_name'].nunique()
-    avg_score = df['score'].mean()
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Reviews Analyzed", f"{total_reviews:,}")
-    col2.metric("Number of Apps", num_apps)
-    col3.metric("Overall Average Score", f"{avg_score:.2f} ⭐")
-
-    st.markdown("---")
-
-    st.subheader("Comparative Analysis")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        review_counts = df['app_name'].value_counts().reset_index()
-        review_counts.columns = ['app_name', 'count']
-        volume_chart = alt.Chart(review_counts).mark_bar().encode(
-            x=alt.X('app_name:N', title='Application', sort='-y'),
-            y=alt.Y('count:Q', title='Number of Reviews'),
-            color='app_name:N',
-            tooltip=['app_name', 'count']
-        ).properties(title="Total Review Volume per App").interactive()
-        st.altair_chart(volume_chart, use_container_width=True)
-
-    with col2:
-        rating_dist_chart = alt.Chart(df).mark_boxplot(extent='min-max').encode(
-            x=alt.X('app_name:N', title='Application'),
-            y=alt.Y('score:Q', title='Star Rating', scale=alt.Scale(domain=[1, 5])),
-            color='app_name:N',
-            tooltip=['app_name', 'median(score)']
-        ).properties(title="Distribution of Star Ratings per App").interactive()
-        st.altair_chart(rating_dist_chart, use_container_width=True)
-
-    st.subheader("Sentiment Distribution Across Apps")
-    sentiment_counts_by_app = df.groupby(['app_name', 'sentiment_name']).size().reset_index(name='count')
-    sentiment_dist_chart = alt.Chart(sentiment_counts_by_app).mark_bar().encode(
-        x=alt.X('app_name:N', title='Application'),
-        y=alt.Y('count:Q', title='Number of Reviews', stack='normalize'),
-        color=alt.Color('sentiment_name:N', title='Sentiment',
-                      scale=alt.Scale(domain=['negative', 'neutral', 'positive'], range=['#e74c3c', '#f1c40f', '#2ecc71'])),
-        tooltip=['app_name', 'sentiment_name', 'count']
-    ).properties(title="Proportion of Sentiments per App").interactive()
-    st.altair_chart(sentiment_dist_chart, use_container_width=True)
-
-    st.subheader("Sentiment by Review Category Across Apps")
     df_categorized = categorize_dataframe(df)
     
-    pivot_df = pd.pivot_table(
-        df_categorized,
-        index=['category', 'sentiment_name'],
-        columns='app_name',
-        values='review_date', # Use a non-numeric column that exists
-        aggfunc='count',
-        fill_value=0
-    )
-    st.dataframe(pivot_df)
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Competitive Scorecard", "Trend Analysis", "Complaint Hotspots", "User Journey Funnel", "Category Deep Dive"])
 
-    st.subheader("Review Drill-Down by Category and Sentiment")
-    for index, row in pivot_df.iterrows():
-        category, sentiment = index
-        with st.expander(f"{category} - {sentiment} Reviews"):
-            filtered_reviews = df_categorized[(df_categorized['category'] == category) & (df_categorized['sentiment_name'] == sentiment)]
-            st.dataframe(filtered_reviews[['app_name', 'original_review', 'score']])
+    with tab1:
+        # --- Competitive Health Scorecard ---
+        st.subheader("Competitive Health Scorecard")
+        
+        app_metrics = []
+        for app_name in df['app_name'].unique():
+            app_df = df_categorized[df_categorized['app_name'] == app_name]
+            total_reviews = len(app_df)
+            if total_reviews == 0: continue
+            
+            pos_reviews = len(app_df[app_df['sentiment_name'] == 'positive'])
+            neg_reviews = len(app_df[app_df['sentiment_name'] == 'negative'])
+            
+            bug_reviews = len(app_df[app_df['category'] == 'Bug'])
+            feature_reviews = len(app_df[app_df['category'] == 'Permintaan Fitur'])
+            
+            sentiment_score = (pos_reviews - neg_reviews) / total_reviews
+            bug_rate = bug_reviews / total_reviews
+            feature_rate = feature_reviews / total_reviews
+            
+            app_metrics.append({
+                'App': app_name,
+                'Total Reviews': total_reviews,
+                'Sentiment Score': sentiment_score,
+                'Bug Rate': bug_rate,
+                'Feature Request Rate': feature_rate
+            })
+        
+        scorecard_df = pd.DataFrame(app_metrics).set_index('App')
+        st.dataframe(scorecard_df.style
+                     .background_gradient(cmap='RdYlGn', subset=['Sentiment Score'])
+                     .background_gradient(cmap='YlOrRd', subset=['Bug Rate'])
+                     .background_gradient(cmap='Blues', subset=['Feature Request Rate'])
+                     .format({
+                         'Total Reviews': '{:,}',
+                         'Sentiment Score': '{:.2%}',
+                         'Bug Rate': '{:.2%}',
+                         'Feature Request Rate': '{:.2%}'
+                     }))
+
+        # --- Competitive Landscape Matrix ---
+        st.subheader("Competitive Landscape Matrix")
+        landscape_chart = alt.Chart(scorecard_df.reset_index()).mark_circle().encode(
+            x=alt.X('Bug Rate:Q', title='Bug Problem Rate (Higher is Worse)', scale=alt.Scale(zero=False)),
+            y=alt.Y('Sentiment Score:Q', title='Overall Sentiment Score (Higher is Better)', scale=alt.Scale(zero=False)),
+            size=alt.Size('Total Reviews:Q', title='Review Volume'),
+            color=alt.Color('App:N'),
+            tooltip=['App', 'Sentiment Score', 'Bug Rate', 'Total Reviews']
+        ).properties(
+            title="Competitive Landscape: Sentiment vs. Stability"
+        ).interactive()
+        st.altair_chart(landscape_chart, use_container_width=True)
+
+    with tab2:
+        st.subheader("Competitive Trend Analysis")
+        
+        metric_to_track = st.selectbox("Select Metric to Track:", ["Sentiment Score", "Bug Rate", "Average Score"])
+        
+        # Resample data by week
+        trends_df = df_categorized.set_index('review_date').groupby('app_name').resample('W').agg(
+            positive=('sentiment_name', lambda x: (x == 'positive').sum()),
+            negative=('sentiment_name', lambda x: (x == 'negative').sum()),
+            total=('sentiment_name', 'count'),
+            bug_count=('category', lambda x: (x == 'Bug').sum()),
+            avg_score=('score', 'mean')
+        ).reset_index()
+
+        trends_df['Sentiment Score'] = (trends_df['positive'] - trends_df['negative']) / trends_df['total']
+        trends_df['Bug Rate'] = trends_df['bug_count'] / trends_df['total']
+        trends_df['Average Score'] = trends_df['avg_score']
+        
+        trend_chart = alt.Chart(trends_df).mark_line().encode(
+            x='review_date:T',
+            y=f'{metric_to_track}:Q',
+            color='app_name:N',
+            tooltip=['app_name', 'review_date', metric_to_track]
+        ).properties(title=f"Weekly Trend of {metric_to_track}").interactive()
+        st.altair_chart(trend_chart, use_container_width=True)
+
+    with tab3:
+        st.subheader("Complaint Hotspots (Bug Category)")
+        bug_reviews = df_categorized[df_categorized['category'] == 'Bug']
+        
+        negative_keywords = ["error", "bug", "crash", "lemot", "lambat", "masalah", "berhenti", "tidak bisa"]
+        
+        hotspot_data = []
+        for app_name in df['app_name'].unique():
+            app_bug_reviews = bug_reviews[bug_reviews['app_name'] == app_name]['cleaned_text']
+            total_bug_reviews = len(app_bug_reviews)
+            if total_bug_reviews > 0:
+                for keyword in negative_keywords:
+                    count = app_bug_reviews.str.contains(keyword).sum()
+                    hotspot_data.append({
+                        'App': app_name,
+                        'Complaint': keyword,
+                        'Frequency': count / total_bug_reviews if total_bug_reviews > 0 else 0
+                    })
+        
+        hotspot_df = pd.DataFrame(hotspot_data)
+        
+        heatmap = alt.Chart(hotspot_df).mark_rect().encode(
+            x='App:N',
+            y='Complaint:N',
+            color=alt.Color('Frequency:Q', scale=alt.Scale(scheme='reds')),
+            tooltip=['App', 'Complaint', alt.Tooltip('Frequency:Q', format='.2%')]
+        ).properties(title="Complaint Keyword Frequency within 'Bug' Category")
+        st.altair_chart(heatmap, use_container_width=True)
+
+    with tab4:
+        st.subheader("User Journey Funnel (Rating to Category)")
+        
+        sankey_data = df_categorized.groupby(['score', 'category']).size().reset_index(name='count')
+        
+        all_nodes = pd.concat([
+            sankey_data['score'].apply(lambda x: f"{x} Star"), 
+            sankey_data['category']
+        ]).unique().tolist()
+        
+        sankey_data['source_id'] = sankey_data['score'].apply(lambda x: all_nodes.index(f"{x} Star"))
+        sankey_data['target_id'] = sankey_data['category'].apply(lambda x: all_nodes.index(x))
+        
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=15,
+                thickness=20,
+                line=dict(color="black", width=0.5),
+                label=all_nodes,
+            ),
+            link=dict(
+                source=sankey_data['source_id'],
+                target=sankey_data['target_id'],
+                value=sankey_data['count']
+            ))])
+        fig.update_layout(title_text="Flow from Star Rating to Review Category", font_size=10)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with tab5:
+        st.subheader("Category Deep Dive")
+        
+        # Calculate negative sentiment rate per category
+        category_sentiment_counts = df_categorized.groupby(['app_name', 'category', 'sentiment_name']).size().unstack(fill_value=0)
+        category_sentiment_counts['total'] = category_sentiment_counts.sum(axis=1)
+        category_sentiment_counts['negative_rate'] = category_sentiment_counts['negative'] / category_sentiment_counts['total']
+        
+        neg_rate_df = category_sentiment_counts.reset_index()
+
+        neg_rate_chart = alt.Chart(neg_rate_df).mark_bar().encode(
+            x=alt.X('app_name:N', title='Application'),
+            y=alt.Y('negative_rate:Q', title='Negative Sentiment Rate', axis=alt.Axis(format='%')),
+            color='app_name:N',
+            column='category:N',
+            tooltip=['app_name', 'category', alt.Tooltip('negative_rate:Q', format='.2%')]
+        ).properties(
+            title="Negative Sentiment Rate by Category"
+        )
+        st.altair_chart(neg_rate_chart)
+
+        st.markdown("---")
+        st.subheader("Sentiment Counts by Category (Raw Data)")
+        pivot_df = pd.pivot_table(
+            df_categorized,
+            index=['category', 'sentiment_name'],
+            columns='app_name',
+            values='review_date',
+            aggfunc='count',
+            fill_value=0
+        )
+        st.dataframe(pivot_df)
 
 
 def show_new_raw_data_visualization(app_df, app_name):
